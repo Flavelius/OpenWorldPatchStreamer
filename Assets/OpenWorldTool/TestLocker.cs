@@ -1,13 +1,11 @@
-﻿using OpenWorldTool.Grid;
+﻿using System.Collections;
+using OpenWorldTool.Scripts;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace OpenWorldTool
 {
     public class TestLocker : MonoBehaviour
     {
-
-        public Transform toLock;
         bool _locked;
 
         void OnGUI()
@@ -15,20 +13,29 @@ namespace OpenWorldTool
             if (!_locked)
             {
                 if (!GUILayout.Button("lock")) return;
-                FindObjectOfType<Grid.GridPatchHandler>().LoadAndLockPatch(toLock.position, OnLoaded);
+                StartCoroutine(LoadWhen());
                 _locked = true;
             }
             else
             {
                 if (!GUILayout.Button("Unlock")) return;
-                FindObjectOfType<Grid.GridPatchHandler>().UnlockPatch(toLock.position);
+                StartCoroutine(UnloadWhen());
                 _locked = false;
             }
         }
 
-        void OnLoaded()
+        IEnumerator LoadWhen()
         {
-            Debug.Log("loaded");
+            Debug.Log("lock started: " + Time.time);
+            yield return FindObjectOfType<GridPatchHandler>().LoadAndLockPatchAsync(transform.position);
+            Debug.Log("lock finished: " + Time.time);
+        }
+
+        IEnumerator UnloadWhen()
+        {
+            Debug.Log("unload started: " + Time.time);
+            yield return FindObjectOfType<GridPatchHandler>().StopAndUnloadPatchesAsync();
+            Debug.Log("unload finished: " + Time.time);
         }
 	
     }

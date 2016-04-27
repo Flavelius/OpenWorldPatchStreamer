@@ -1,17 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+#if UNITY_EDITOR
 using UnityEditor;
+#endif
 using UnityEngine;
 
-namespace OpenWorldTool.Grid
+namespace OpenWorldTool.Scripts
 {
     public class PatchConfiguration: ScriptableObject
     {
         [SerializeField, ReadOnlyInInspector]
         public int PatchSize = 100;
 
-        [SerializeField, ReadOnlyInInspector, Tooltip("Dont manually delete scenes from this folder!")]
+        [SerializeField, Tooltip("Dont manually delete scenes from this folder!")]
         public string Folder = "";
 
         [Header("Unique Identifier")]
@@ -19,7 +21,7 @@ namespace OpenWorldTool.Grid
 
         Dictionary<int, Dictionary<int, string>> _cachedPatchNames = new Dictionary<int, Dictionary<int, string>>();
 
-        string GetCachedName(int x, int y)
+        string GetCachedFormattedPatchName(int x, int z)
         {
             Dictionary<int, string> dict1;
             if (!_cachedPatchNames.TryGetValue(x, out dict1))
@@ -27,23 +29,31 @@ namespace OpenWorldTool.Grid
                 dict1 = new Dictionary<int, string>();
                 _cachedPatchNames.Add(x, dict1);
             }
-            if (!dict1.ContainsKey(y))
+            if (!dict1.ContainsKey(z))
             {
-                dict1.Add(y, string.Format("{0}_{1}_{2}", PatchIdentifier, x, y));
+                dict1.Add(z, string.Format("{0}_{1}_{2}", PatchIdentifier, x, z));
             }
-            return dict1[y];
+            return dict1[z];
         } 
 
-        public string FormatPatchName(int x, int y)
+        public string FormatPatchName(int x, int z)
         {
-            return Application.isPlaying ? GetCachedName(x, y) : string.Format("{0}_{1}_{2}", PatchIdentifier, x, y);
+            if (Application.isPlaying)
+            {
+                return GetCachedFormattedPatchName(x, z);
+            }
+            var path = string.Format("{0}_{1}_{2}", PatchIdentifier, x, z);
+            return path;
         }
 
         readonly Dictionary<string, string> _cachedPathFolderNames = new Dictionary<string, string>(); 
-        public string FormatPatchNameWithFolder(int x, int y)
+        public string FormatPatchNameWithFolder(int x, int z)
         {
-            if (!Application.isPlaying) return Path.Combine(Folder, FormatPatchName(x, y));
-            var pName = FormatPatchName(x, y);
+            if (!Application.isPlaying)
+            {
+                return Path.Combine(Folder, FormatPatchName(x, z));
+            }
+            var pName = FormatPatchName(x, z);
             string outVal;
             if (_cachedPathFolderNames.TryGetValue(pName, out outVal)) return outVal;
             outVal = Path.Combine(Folder, pName);
@@ -51,36 +61,37 @@ namespace OpenWorldTool.Grid
             return outVal;
         }
 
-        public string FormatAbsoluteAssetPath(int x, int y)
+        public string FormatLocalAssetPathPatchName(int x, int z)
         {
-            return Path.Combine(Application.dataPath, FormatPatchNameWithFolder(x, y) + ".unity");
+            return Path.Combine("Assets/", FormatPatchNameWithFolder(x, z)) + ".unity";
         }
 
-        public string FormatLocalAssetPath(int x, int y)
+        public bool CanPatchBeLoaded(int x, int z)
         {
-            return Path.Combine("Assets/", FormatPatchNameWithFolder(x, y)) + ".unity";
-        }
-
-        public bool SceneExists(int x, int y)
-        {
-            return File.Exists(FormatAbsoluteAssetPath(x, y));
-        }
-
-        public bool CanPatchBeLoaded(int x, int y)
-        {
-            var path = FormatPatchNameWithFolder(x, y);
+            var path = FormatPatchNameWithFolder(x, z);
             if (Application.isPlaying)
             {
                 return Application.CanStreamedLevelBeLoaded(path);
             }
 #if UNITY_EDITOR
-            path = FormatLocalAssetPath(x, y);
+            path = FormatLocalAssetPathPatchName(x, z);
             for (var i = 0; i < EditorBuildSettings.scenes.Length; i++)
             {
                 if (EditorBuildSettings.scenes[i].path == path) return true;
             }
 #endif
             return false;
+        }
+
+#if UNITY_EDITOR
+        public bool SceneExists(int x, int z)
+        {
+            return File.Exists(FormatAbsoluteAssetPath(x, z));
+        }
+
+        public string FormatAbsoluteAssetPath(int x, int z)
+        {
+            return Path.Combine(Application.dataPath, FormatPatchNameWithFolder(x, z) + ".unity");
         }
 
         [ContextMenu("Add Scenes To Build settings")]
@@ -127,5 +138,6 @@ namespace OpenWorldTool.Grid
             }
             return false;
         }
+#endif
     }
 }

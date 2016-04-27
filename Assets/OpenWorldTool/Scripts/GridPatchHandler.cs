@@ -2,14 +2,14 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using UnityEngine;
+using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.SceneManagement;
 #endif
-using UnityEngine;
-using UnityEngine.SceneManagement;
 
-namespace OpenWorldTool.Grid
+namespace OpenWorldTool.Scripts
 {
     [ExecuteInEditMode]
     public class GridPatchHandler : MonoBehaviour
@@ -21,6 +21,8 @@ namespace OpenWorldTool.Grid
         readonly Queue<PatchAction> _queuedActions = new Queue<PatchAction>();
 
         readonly HashSet<string> _lockedPatches = new HashSet<string>();
+
+        bool _isBusy;
 
         Coroutine _updateRoutine;
 
@@ -68,6 +70,73 @@ namespace OpenWorldTool.Grid
             }
         }
 
+        public abstract class AsyncGridTask: IEnumerator
+        {
+            public abstract bool MoveNext();
+            public abstract void Reset();
+            public abstract object Current { get; }
+        }
+
+        class AsyncStopHandlerUnloadPatches: AsyncGridTask
+        {
+            bool _isDone;
+            readonly Action _isDoneCallback;
+            readonly Func<bool> _predicate;
+            readonly object nullObject = null;
+
+            public AsyncStopHandlerUnloadPatches(Func<bool> predicate, Action isDoneCallback)
+            {
+                _isDone = false;
+                _isDoneCallback = isDoneCallback;
+                _predicate = predicate;
+            }
+
+            public override bool MoveNext()
+            {
+                if (_isDone) return false;
+                if (_predicate()) return true;
+                if (_isDoneCallback != null) _isDoneCallback();
+                _isDone = true;
+                return false;
+            }
+
+            public override void Reset()
+            {
+                Debug.LogError("Reset not supported!");
+            }
+
+            public override object Current
+            {
+                get { return nullObject; }
+            }
+        }
+
+        class AsyncLoadLockPatch: AsyncGridTask
+        {
+            bool _isDone = true;
+            readonly object nullObject = null;
+
+            public override bool MoveNext()
+            {
+                return _isDone;
+            }
+
+            public void SetDone()
+            {
+                _isDone = false;
+            }
+
+            public override void Reset()
+            {
+                Debug.LogError("Reset not supported!");
+            }
+
+            public override object Current
+            {
+                get { return nullObject; }
+            }
+        }
+
         /// <summary>
         /// target patch will be loaded and locked until unlocked and next regular unload cycle
         /// </summary>
@@ -77,15 +146,36 @@ namespace OpenWorldTool.Grid
         {
             if (PatchConfiguration == null) throw new NullReferenceException("Patch Configuration null");
             var x = RoundToInt(point.x/PatchConfiguration.PatchSize);
-            var y = RoundToInt(point.z/PatchConfiguration.PatchSize);
-            var pName = PatchConfiguration.FormatPatchName(x, y);
+            var z = RoundToInt(point.z/PatchConfiguration.PatchSize);
+            var pName = PatchConfiguration.FormatPatchName(x, z);
             if (IsPatchLoaded(pName))
             {
                 if (OnFinished != null) OnFinished();
                 return;
             }
             LockPatch(pName);
-            LoadPatch(x, y, true, OnFinished);
+            LoadPatch(x, z, true, OnFinished);
+        }
+
+        /// <summary>
+        /// target patch will be loaded and locked until unlocked and next regular unload cycle
+        /// </summary>
+        /// <param name="point">load patch that contains this point</param>
+        /// <returns>a task that can be yielded to wait for the loading to be done</returns>
+        public AsyncGridTask LoadAndLockPatchAsync(Vector3 point)
+        {
+            if (PatchConfiguration == null) throw new NullReferenceException("Patch Configuration null");
+            var x = RoundToInt(point.x / PatchConfiguration.PatchSize);
+            var z = RoundToInt(point.z / PatchConfiguration.PatchSize);
+            var pName = PatchConfiguration.FormatPatchName(x, z);
+            var task = new AsyncLoadLockPatch();
+            if (IsPatchLoaded(pName))
+            {
+                task.SetDone();
+            }
+            LockPatch(pName);
+            LoadPatch(x, z, true, task.SetDone);
+            return task;
         }
 
         /// <summary>
@@ -101,7 +191,7 @@ namespace OpenWorldTool.Grid
             UnlockPatch(pName);
         }
 
-        bool IsPatchLoaded(string patchName)
+        static bool IsPatchLoaded(string patchName)
         {
             var s = SceneManager.GetSceneByName(patchName);
             return s.IsValid() && s.isLoaded;
@@ -122,10 +212,29 @@ namespace OpenWorldTool.Grid
             return _lockedPatches.Contains(patchName);
         }
 
+        public bool IsBusy()
+        {
+            return _isBusy;
+        }
+
         /// <summary>
         /// Unloads all patches and stops the range/visibility calculations
         /// </summary>
-        public void StopHandler()
+        /// <returns>a task that can be yielded to wait for the unloading to be finished</returns>
+        public AsyncGridTask StopAndUnloadPatchesAsync()
+        {
+            if (_updateRoutine != null)
+            {
+                StopCoroutine(_updateRoutine);
+            }
+            return new AsyncStopHandlerUnloadPatches(IsBusy, UnloadAllPatches);
+        }
+
+        /// <summary>
+        /// It is only safe to call this when <see cref="IsBusy"/> returns false!
+        /// Easier alternative: <see cref="StopAndUnloadPatchesAsync"/>
+        /// </summary>
+        public void StopAndUnloadPatches()
         {
             if (_updateRoutine != null)
             {
@@ -134,10 +243,10 @@ namespace OpenWorldTool.Grid
             UnloadAllPatches();
         }
 
-        void LoadPatch(int x, int y, bool skipUnlock, Action onFinishedCallback = null)
+        void LoadPatch(int x, int z, bool skipUnlock, Action onFinishedCallback = null)
         {
-            var patchName = PatchConfiguration.FormatPatchName(x, y);
-            if (!PatchConfiguration.CanPatchBeLoaded(x,y)) return;
+            var patchName = PatchConfiguration.FormatPatchName(x, z);
+            if (!PatchConfiguration.CanPatchBeLoaded(x,z)) return;
             if (Application.isPlaying)
             {
                 var scene = SceneManager.GetSceneByName(patchName);
@@ -154,7 +263,7 @@ namespace OpenWorldTool.Grid
             else
             {
 #if UNITY_EDITOR
-                EditorSceneManager.OpenScene(PatchConfiguration.FormatLocalAssetPath(x, y), OpenSceneMode.Additive);
+                EditorSceneManager.OpenScene(PatchConfiguration.FormatLocalAssetPathPatchName(x, z), OpenSceneMode.Additive);
 #endif
             }
         }
@@ -184,12 +293,48 @@ namespace OpenWorldTool.Grid
             }
         }
 
+        void OnEnable()
+        {
+            if (Application.isPlaying)
+            {
+                if (_updateRoutine == null)
+                {
+                    _updateRoutine = StartCoroutine(ExecuteQueuedActions());
+                }
+                return;
+            }
+#if UNITY_EDITOR
+            RegisterSceneGUI();
+#endif
+        }
+
+        void OnDisable()
+        {
+            if (Application.isPlaying && _updateRoutine != null)
+            {
+                StopCoroutine(_updateRoutine);
+                _updateRoutine = null;
+            }
+#if UNITY_EDITOR
+            UnregisterSceneGUI();
+#endif
+        }
+
+        void OnDestroy()
+        {
+#if UNITY_EDITOR
+            UnregisterSceneGUI();
+#endif
+        }
+
         void Start()
         {
+#if UNITY_EDITOR
             if (Application.isPlaying)
             {
                 UnloadAllPatches();
             }
+#endif
         }
 
         void Update()
@@ -206,29 +351,46 @@ namespace OpenWorldTool.Grid
             {
                 yield return null;
                 if (_queuedActions.Count <= 0) continue;
+                _isBusy = true;
                 var a = _queuedActions.Dequeue();
                 var scene = SceneManager.GetSceneByName(a.Patch);
                 if (a.ActionType == PatchAction.PatchActionType.Load)
                 {
-                    if (scene.IsValid() && scene.isLoaded) continue;
+                    if (scene.IsValid() && scene.isLoaded)
+                    {
+                        _isBusy = false;
+                        continue;
+                    }
                     var loadOperation = SceneManager.LoadSceneAsync(a.Patch, LoadSceneMode.Additive);
                     loadOperation.allowSceneActivation = true;
+                    
                     while (!loadOperation.isDone)
                     {
                         yield return null;
                     }
+                    
                     a.OnReady(SceneManager.GetSceneByPath(a.Patch));
+                    _isBusy = false;
                     continue;
                 }
-                if (a.ActionType != PatchAction.PatchActionType.Unload) continue;
-                if (!scene.IsValid() || !scene.isLoaded) continue;
+                if (a.ActionType != PatchAction.PatchActionType.Unload)
+                {
+                    _isBusy = false;
+                    continue;
+                }
+                if (!scene.IsValid() || !scene.isLoaded)
+                {
+                    _isBusy = false;
+                    continue;
+                }
                 SceneManager.UnloadScene(scene.buildIndex);
                 a.OnReady(scene);
+                _isBusy = false;
             }
             // ReSharper disable once FunctionNeverReturns
         }
 
-        int RoundToInt(float point)
+        static int RoundToInt(float point)
         {
             return Mathf.RoundToInt(point);
         }
@@ -286,43 +448,20 @@ namespace OpenWorldTool.Grid
         }
 
 #if UNITY_EDITOR
-        void Awake()
-        {
-            if (!Application.isPlaying)
-            {
-                SceneView.onSceneGUIDelegate += DrawSceneGUI;
-            }
-        }
 
-        void OnEnable()
+
+        void RegisterSceneGUI()
         {
-            if (Application.isPlaying)
-            {
-                if (_updateRoutine == null)
-                {
-                    _updateRoutine = StartCoroutine(ExecuteQueuedActions());
-                }
-                return;
-            }
             SceneView.onSceneGUIDelegate -= DrawSceneGUI;
             SceneView.onSceneGUIDelegate += DrawSceneGUI;
         }
 
-        void OnDisable()
+        void UnregisterSceneGUI()
         {
-            if (Application.isPlaying && _updateRoutine != null)
-            {
-                StopCoroutine(_updateRoutine);
-                _updateRoutine = null;
-            }
-        }
-
-        void OnDestroy()
-        {
-            if (Application.isPlaying) return;
             SceneView.onSceneGUIDelegate -= DrawSceneGUI;
             Tools.hidden = false;
         }
+        
 
 #region SceneGUI
 
@@ -488,7 +627,7 @@ namespace OpenWorldTool.Grid
             if (!EditorUtility.DisplayDialog("", "Create Patch?", "Create", "Cancel")) return;
             var activeScene = SceneManager.GetActiveScene();
             var s = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
-            EditorSceneManager.SaveScene(s, ps.FormatLocalAssetPath(x, z));
+            EditorSceneManager.SaveScene(s, ps.FormatLocalAssetPathPatchName(x, z));
             //add to build settings
             if (!ps.IsSceneAddedToBuildSettings(s.path))
             {
@@ -506,13 +645,13 @@ namespace OpenWorldTool.Grid
         void RemovePatch(int x, int z, PatchConfiguration ps)
         {
             if (!EditorUtility.DisplayDialog("Remove Patch?", string.Format("The patch ({0}) will be deleted!", ps.FormatPatchName(x,z)), "Remove", "Cancel")) return;
-            var s = SceneManager.GetSceneByPath(ps.FormatLocalAssetPath(x, z));
+            var s = SceneManager.GetSceneByPath(ps.FormatLocalAssetPathPatchName(x, z));
             if (s.IsValid())
             {
                 EditorSceneManager.CloseScene(s, true);
             }
             //remove from build settings
-            var path = ps.FormatLocalAssetPath(x, z);
+            var path = ps.FormatLocalAssetPathPatchName(x, z);
             var settingsScenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
             for (var i = 0; i < settingsScenes.Count; i++)
             {

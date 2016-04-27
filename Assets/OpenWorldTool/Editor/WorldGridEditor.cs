@@ -1,4 +1,4 @@
-﻿using OpenWorldTool.Grid;
+﻿using OpenWorldTool.Scripts;
 using UnityEditor;
 using UnityEngine;
 
@@ -46,7 +46,7 @@ namespace OpenWorldTool
                 if (delete)
                 {
                     Undo.RecordObject(wg, "GridPatchHandler");
-                    wg.StopHandler();
+                    wg.StopAndUnloadPatchesAsync();
                     wg.PatchConfiguration = null;
                 }
             }
